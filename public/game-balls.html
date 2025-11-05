@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>🍓 Fruit Rush</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.1.9/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.1.3/socket.io.js"></script>
+    <style>
+      body { 
+        margin: 0; 
+        padding: 0; 
+        overflow-y: auto; 
+      }
+      canvas {
+        display: block; /* 余白なく表示 */
+      }
+      #overlay {
+        display: none;
+        position: absolute;
+        top:0; left:0;
+        width:100%; height:100%;
+        text-align:center;
+        z-index:1000;
+      }
+      #overlay-text {
+        font-size: 80px;
+        display: block;
+        margin-top: 300px; /* 画面中央っぽく調整 */
+      }
+      #overlay-score {
+        font-size: 32px;
+        display: block;
+        margin-top: 20px;
+      }
+    </style>
+  </head>
+
+  <body>
+    <h1>🍓 Fruit Rush</h1>
+
+    <div>
+      <div>あなたのID: <span id="myid"></span></div>
+      <button id="connect">ルームに入る</button>
+      <div>スマホを傾けてフルーツを集めよう！</div>
+
+      <!-- 得点ルール -->
+      <div id="points" style="
+          margin-top: 10px;
+          font-size: 18px;
+          background-color: #fff8dc;
+          border: 2px solid #ffcc00;
+          border-radius: 10px;
+          padding: 10px;
+          display: inline-block;
+      ">
+        🍋 レモン: +1　🍎 りんご: +3　🍇 ぶどう: +5　💣 爆弾: 当たると GAME OVER
+      </div>
+
+      <h2 id="score">Score: 0</h2>
+      <h3 id="timer">Time: 30</h3>
+    </div>
+
+    <!-- ゲームオーバー / タイムアップ用オーバーレイ -->
+    <div id="overlay">
+      <span id="overlay-text"></span>
+      <span id="overlay-score"></span>
+    </div>
+
+    <script>
+      let socket = io.connect();
+
+      let btn = document.querySelector("#connect");
+      let g = 0, b = 0;
+      let score = 0, timeLeft = 30;
+      let gameRunning = false;
+
+      let myid = sessionStorage.getItem("clientId");
+      if (!myid) {
+        myid = Math.random().toString(36).substring(2, 15);
+        sessionStorage.setItem("clientId", myid);
+      }
+      document.querySelector("#myid").innerHTML = myid;
+
+      btn.addEventListener("click", function () {
+        socket.emit("join", "game");
+        btn.remove();
+        startGame();
+      });
+
+      socket.on("sensor", function (data) {
+        g = parseFloat(data.g);
+        b = parseFloat(data.b);
+      });
+
+      // ---------------------------
+      let x = 0, y = 0;
+      let r = 40, speed = 8;
+      let fruits = [], glow = 0, sound;
+      let bomb;
+
+      function preload() {
+        sound = new Audio(
+          "https://actions.google.com/sounds/v1/cartoon/pop.ogg"
+        );
+      }
+
+      function setup() {
+        createCanvas(800, 800, WEBGL);
+        camera(0, -400, 1000, 0, 0, 0, 0, 0, -1);
+        noStroke();
+
+        for (let i = 0; i < 8; i++) fruits.push(createFruit());
+        bomb = createBomb();
+
+        setInterval(() => { 
+          if (gameRunning) {
+            timeLeft--;
+            if(timeLeft <= 0) endGame("TIME UP!"); 
+            document.querySelector("#timer").innerText = "Time: " + timeLeft;
+          }
+        }, 1000);
+      }
+
+      function draw() {
+        background(255, 255, 255);
+        ambientLight(80);
+        pointLight(255, 255, 255, 0, 0, 500);
+
+        push();
+        rotateX((PI * b) / 180);
+        rotateY((-PI * g) / 180);
+        translate(0, 0, -50);
+
+        // 床
+        ambientMaterial(200, 255, 200);
+        box(800, 800, 30);
+
+        // フルーツ
+        for (let fruit of fruits) {
+          push();
+          translate(fruit.x, fruit.y, 50);
+          ambientMaterial(fruit.color);
+          sphere(30);
+          pop();
+        }
+
+        // 爆弾
+        moveBomb();
+        push();
+        translate(bomb.x, bomb.y, 50);
+        ambientMaterial(bomb.color);
+        sphere(bomb.size);
+        pop();
+
+        // 玉の動き
+        let gx = radians(g), gb = radians(b);
+        x += -speed * sin(gx);
+        y += speed * sin(-gb);
+        x = constrain(x, -350, 350);
+        y = constrain(y, -350, 350);
+
+        // 玉描画
+        push();
+        translate(x, y, 50);
+        specularMaterial(100, 150, 255 + glow);
+        sphere(r);
+        pop();
+
+        // 衝突判定
+        if (gameRunning) {
+          for (let fruit of fruits) {
+            let d = dist(x, y, fruit.x, fruit.y);
+            if (d < 60) {
+              score += fruit.point;
+              document.querySelector("#score").innerText = "Score: " + score;
+              sound.currentTime = 0;
+              sound.play();
+              glow = 100;
+              setTimeout(() => (glow = 0), 200);
+              Object.assign(fruit, createFruit());
+            }
+          }
+
+          let db = dist(x, y, bomb.x, bomb.y);
+          if (db < r + bomb.size * 0.8) {
+            endGame("GAME OVER");
+          }
+        }
+        pop();
+      }
+
+      // ---------------------------
+      function createFruit() {
+        let colors = [
+          { color: [255, 230, 80], point: 1 },
+          { color: [255, 80, 80], point: 3 },
+          { color: [180, 100, 255], point: 5 }
+        ];
+        let f = random(colors);
+        return { x: random(-300, 300), y: random(-300, 300), color: f.color, point: f.point };
+      }
+
+      function createBomb() {
+        return { x: random(-300,300), y: random(-300,300), dx: random(-2,2), dy: random(-2,2), size:60, color:[50,50,50] };
+      }
+
+      function moveBomb() {
+        bomb.x += bomb.dx;
+        bomb.y += bomb.dy;
+        if (bomb.x < -350 || bomb.x > 350) bomb.dx *= -1;
+        if (bomb.y < -350 || bomb.y > 350) bomb.dy *= -1;
+        if (random() < 0.01) { bomb.dx = random(-2,2); bomb.dy = random(-2,2); }
+      }
+
+      // ---------------------------
+      function startGame() {
+        score = 0;
+        timeLeft = 30;
+        gameRunning = true;
+        x = 0; y = 0;
+        fruits = [];
+        for (let i = 0; i < 8; i++) fruits.push(createFruit());
+        bomb = createBomb();
+        document.getElementById('overlay').style.display = 'none';
+        document.querySelector("#score").innerText = "Score: 0";
+        document.querySelector("#timer").innerText = "Time: 30";
+      }
+
+      function endGame(message) {
+        gameRunning = false;
+        let overlay = document.getElementById('overlay');
+        let overlayText = document.getElementById('overlay-text');
+        let overlayScore = document.getElementById('overlay-score');
+
+        overlay.style.display = 'block';
+        overlayText.innerText = message;
+        overlayScore.innerText = "Score: " + score;
+
+        // 終了時の背景色・文字色
+        if (message === "GAME OVER") {
+          overlay.style.background = "rgba(255, 150, 150, 0.7)"; // 赤
+          overlayText.style.color = "yellow";
+          overlayScore.style.color = "white";
+        } else if (message === "TIME UP!") {
+          overlay.style.background = "rgba(50, 100, 255, 0.7)"; // 青
+          overlayText.style.color = "white";
+          overlayScore.style.color = "yellow";
+        } else {
+          overlay.style.background = "rgba(0,0,0,0.7)";
+          overlayText.style.color = "white";
+          overlayScore.style.color = "white";
+        }
+      }
+
+      function mousePressed() {
+        if (!gameRunning) startGame();
+      }
+    </script>
+  </body>
+</html>
